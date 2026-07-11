@@ -51,7 +51,7 @@ fun SafetyScoreCard(
     val title = UserCopy.safetyTitle(current.confidence)
     val description = UserCopy.safetyDescription(
         confidence = current.confidence,
-        outlierCount = current.excludedProviders.size,
+        outlierCount = current.statisticalOutliers.size,
     )
 
     PremiumGlassSurface(

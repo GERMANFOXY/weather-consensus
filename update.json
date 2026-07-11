@@ -1,7 +1,7 @@
 {
-  "versionCode": 2,
-  "versionName": "1.1.0",
-  "apkUrl": "https://github.com/GERMANFOXY/weather-consensus/releases/download/v1.1.0/weather-consensus-v1.1.0.apk",
-  "releaseNotes": "Erste Test-Updates: UI-Verbesserungen und Bugfixes.",
+  "versionCode": 3,
+  "versionName": "1.2.0",
+  "apkUrl": "https://github.com/GERMANFOXY/weather-consensus/releases/download/v1.2.0/weather-consensus-v1.2.0.apk",
+  "releaseNotes": "Neu: Startbildschirm-Widget, Favoriten-Orte und Offline-Modus mit Zeitstempel. Außerdem: Ort bleibt gespeichert, 7-Tage-Vorhersage korrigiert, DWD-Regenwahrscheinlichkeit realistischer.",
   "enabled": true
 }

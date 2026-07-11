@@ -16,12 +16,11 @@ import com.weatherconsensus.domain.model.WeatherConsensusResult
 import com.weatherconsensus.domain.model.WeatherDetails
 import com.weatherconsensus.domain.model.WeatherProvider
 import com.weatherconsensus.domain.model.WeatherWarning
-import com.weatherconsensus.domain.consensus.ProviderWeightPolicy
 import com.weatherconsensus.domain.location.ForecastDateUtils
 import com.weatherconsensus.domain.normalization.WeatherConditionMapper
 import java.time.Instant
 import java.time.LocalDate
-import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class ConsensusEngine {
 
@@ -35,6 +34,7 @@ class ConsensusEngine {
         weatherWarnings: List<WeatherWarning> = emptyList(),
         warningsLoadError: String? = null,
         isInGermany: Boolean = false,
+        accuracyMultipliers: Map<WeatherProvider, Float> = emptyMap(),
     ): WeatherConsensusResult {
         val successful = providerResults.filter { it.isSuccess }
         val dwdAvailable = successful.any { it.provider == WeatherProvider.DWD }
@@ -42,7 +42,13 @@ class ConsensusEngine {
             result.current?.let { ProviderValue(result.provider, it) }
         }
 
-        var currentConsensus = buildSnapshot(currentSnapshots, weights, providerResults, supplementaryDetails)
+        var currentConsensus = buildSnapshot(
+            values = currentSnapshots,
+            weights = weights,
+            allResults = providerResults,
+            supplementary = supplementaryDetails,
+            accuracyMultipliers = accuracyMultipliers,
+        )
 
         if (isInGermany && dwdAvailable && currentConsensus.confidence == ConfidenceLevel.UNCERTAIN) {
             val boostedWeights = ProviderWeightPolicy.withUncertaintyDwdBoost(
@@ -51,27 +57,45 @@ class ConsensusEngine {
                 dwdAvailable = true,
             )
             currentConsensus = buildSnapshot(
-                currentSnapshots,
-                boostedWeights,
-                providerResults,
-                supplementaryDetails,
+                values = currentSnapshots,
+                weights = boostedWeights,
+                allResults = providerResults,
+                supplementary = supplementaryDetails,
+                accuracyMultipliers = accuracyMultipliers,
             )
         }
 
-        val hourlyTimestamps = successful
-            .flatMap { it.hourlyForecast }
-            .map { it.timestampEpochSeconds }
-            .distinct().sorted().take(24)
-
-        val hourlyConsensus = hourlyTimestamps.map { timestamp ->
-            val entries = successful.mapNotNull { result ->
-                result.hourlyForecast.find { it.timestampEpochSeconds == timestamp }
-                    ?.let { ProviderValue(result.provider, it) }
-            }
-            buildHourlySnapshot(timestamp, entries, weights)
+        val hourlyGroups = ConsensusAggregation.groupHourlyForecasts(successful)
+        val hourlyConsensus = hourlyGroups.map { (timestamp, entries) ->
+            buildHourlySnapshot(
+                timestamp = timestamp,
+                values = entries,
+                weights = weights,
+                accuracyMultipliers = accuracyMultipliers,
+            )
         }
 
-        val dailyConsensus = buildDailyConsensus(successful, weights, timezoneId)
+        val dailyConsensus = buildDailyConsensus(
+            successful = successful,
+            weights = weights,
+            timezoneId = timezoneId,
+            accuracyMultipliers = accuracyMultipliers,
+        )
+
+        currentConsensus = enrichCurrentRainChance(
+            current = currentConsensus,
+            hourly = hourlyConsensus,
+            daily = dailyConsensus,
+        )
+
+        currentConsensus = currentConsensus.copy(
+            ensembleHints = ConsensusAggregation.buildEnsembleHints(
+                successful = successful,
+                timezoneId = timezoneId,
+                consensusCondition = currentConsensus.condition,
+                rainProbabilityPercent = currentConsensus.precipitationProbabilityPercent,
+            ),
+        )
 
         return WeatherConsensusResult(
             location = location,
@@ -88,10 +112,36 @@ class ConsensusEngine {
         )
     }
 
+    private fun enrichCurrentRainChance(
+        current: ConsensusSnapshot,
+        hourly: List<ConsensusHourlyForecast>,
+        daily: List<ConsensusDailyForecast>,
+    ): ConsensusSnapshot {
+        val direct = current.precipitationProbabilityPercent?.let(ProviderRainResolver::normalizePrecipPercent)
+        val nearestHourly = hourly.firstOrNull()?.precipitationProbabilityPercent?.let(ProviderRainResolver::normalizePrecipPercent)
+        val todayDaily = daily.firstOrNull()?.precipitationProbabilityPercent?.let(ProviderRainResolver::normalizePrecipPercent)
+
+        val resolved = sequenceOf(nearestHourly, direct, todayDaily)
+            .filterNotNull()
+            .firstOrNull { it.roundToInt() > 0 }
+            ?: todayDaily
+            ?: nearestHourly
+            ?: direct
+
+        val updated = if (resolved != null && resolved != direct) {
+            current.copy(precipitationProbabilityPercent = resolved)
+        } else {
+            current
+        }
+
+        return updated
+    }
+
     private fun buildDailyConsensus(
         successful: List<ProviderWeatherResult>,
         weights: ProviderWeights,
         timezoneId: String?,
+        accuracyMultipliers: Map<WeatherProvider, Float>,
     ): List<ConsensusDailyForecast> {
         val zone = ForecastDateUtils.resolveZone(timezoneId)
         val today = LocalDate.now(zone)
@@ -114,6 +164,7 @@ class ConsensusEngine {
                     date = localDate.atStartOfDay(zone).toEpochSecond(),
                     values = entries,
                     weights = weights,
+                    accuracyMultipliers = accuracyMultipliers,
                 )
             }
     }
@@ -123,61 +174,95 @@ class ConsensusEngine {
         weights: ProviderWeights,
         allResults: List<ProviderWeatherResult>,
         supplementary: WeatherDetails,
+        accuracyMultipliers: Map<WeatherProvider, Float>,
     ): ConsensusSnapshot {
-        val excluded = allResults
+        val unavailable = allResults
             .filter { !it.isSuccess }
             .associate { it.provider to (it.errorMessage ?: "Gerade nicht verfügbar") }
 
-        val filteredTemp = removeOutliers(values.mapNotNull { pv ->
-            pv.value.temperatureC?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredWind = removeOutliers(values.mapNotNull { pv ->
-            pv.value.windKmh?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredPrecip = removeOutliers(values.mapNotNull { pv ->
-            pv.value.precipitationMm?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredPrecipProb = removeOutliers(values.mapNotNull { pv ->
-            pv.value.precipitationProbabilityPercent?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredHumidity = removeOutliers(values.mapNotNull { pv ->
-            pv.value.humidityPercent?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredFeelsLike = removeOutliers(values.mapNotNull { pv ->
-            pv.value.feelsLikeC?.let { ProviderValue(pv.provider, it) }
-        })
+        val tempAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.temperatureC?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val windAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.windKmh?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val precipAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.precipitationMm?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val precipProbAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv ->
+                pv.value.precipitationProbabilityPercent?.let { ProviderValue(pv.provider, it) }
+            },
+            weights,
+            accuracyMultipliers,
+        )
+        val humidityAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.humidityPercent?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val feelsLikeAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.feelsLikeC?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+
+        val statisticalOutliers = ConsensusAggregation.mergeOutlierMaps(
+            tempAgg.outliers,
+            windAgg.outliers,
+            precipAgg.outliers,
+            precipProbAgg.outliers,
+            humidityAgg.outliers,
+            feelsLikeAgg.outliers,
+        )
 
         val numericScores = listOf(
-            agreementScore(filteredTemp),
-            agreementScore(filteredWind),
-            agreementScore(filteredPrecip),
-            agreementScore(filteredHumidity),
+            ConsensusAggregation.agreementScore(tempAgg.filtered.map { ProviderValue(it.provider, it.value) }),
+            ConsensusAggregation.agreementScore(windAgg.filtered.map { ProviderValue(it.provider, it.value) }),
+            ConsensusAggregation.agreementScore(precipAgg.filtered.map { ProviderValue(it.provider, it.value) }),
+            ConsensusAggregation.agreementScore(humidityAgg.filtered.map { ProviderValue(it.provider, it.value) }),
         ).filter { it >= 0 }
 
-        val conditionAgreement = conditionAgreement(values.map { it.value.condition })
-        val confidenceScore = if (numericScores.isEmpty()) conditionAgreement
-        else (numericScores.average() * 0.8) + (conditionAgreement * 0.2)
+        val conditionValues = values.map { ProviderValue(it.provider, it.value.condition) }
+        val conditionAgreement = ConsensusAggregation.conditionAgreement(conditionValues.map { it.value })
+        val confidenceScore = if (numericScores.isEmpty()) {
+            conditionAgreement
+        } else {
+            (numericScores.average() * 0.8) + (conditionAgreement * 0.2)
+        }
 
         val mergedDetails = mergeDetails(
             values.map { it.value.details },
             supplementary,
-            weights,
+            tempAgg.weights,
             values.map { ProviderValue(it.provider, it.value.details) },
+            accuracyMultipliers,
         )
 
+        val condition = WeatherConditionMapper.weightedConsensusCondition(conditionValues, tempAgg.weights)
+        val rainProbability = ConsensusAggregation.aggregateRainProbability(precipProbAgg)
+
         return ConsensusSnapshot(
-            temperatureC = weightedAverage(filteredTemp, weights),
-            feelsLikeC = weightedAverage(filteredFeelsLike, weights),
-            windKmh = weightedAverage(filteredWind, weights),
-            precipitationMm = weightedAverage(filteredPrecip, weights),
-            precipitationProbabilityPercent = weightedAverage(filteredPrecipProb, weights),
-            humidityPercent = weightedAverage(filteredHumidity, weights),
-            condition = WeatherConditionMapper.consensusCondition(values.map { it.value.condition }),
+            temperatureC = ConsensusAggregation.weightedAverage(tempAgg.filtered, tempAgg.weights),
+            feelsLikeC = ConsensusAggregation.weightedAverage(feelsLikeAgg.filtered, feelsLikeAgg.weights),
+            windKmh = ConsensusAggregation.weightedAverage(windAgg.filtered, windAgg.weights),
+            precipitationMm = ConsensusAggregation.aggregatePrecipitationMm(precipAgg, confidenceScore),
+            precipitationProbabilityPercent = rainProbability,
+            humidityPercent = ConsensusAggregation.weightedAverage(humidityAgg.filtered, humidityAgg.weights),
+            condition = condition,
             confidence = ConfidenceLevel.fromScore(confidenceScore),
             confidenceScore = confidenceScore,
             details = mergedDetails,
             providerContributions = values.associate { it.provider to it.value },
-            excludedProviders = excluded,
+            excludedProviders = unavailable,
+            statisticalOutliers = statisticalOutliers,
+            ensembleHints = emptyList(),
         )
     }
 
@@ -186,12 +271,14 @@ class ConsensusEngine {
         supplementary: WeatherDetails,
         weights: ProviderWeights,
         weighted: List<ProviderValue<WeatherDetails>>,
+        accuracyMultipliers: Map<WeatherProvider, Float>,
     ): WeatherDetails {
         fun avg(selector: (WeatherDetails) -> Double?): Double? {
             val vals = weighted.mapNotNull { pv ->
                 selector(pv.value)?.let { ProviderValue(pv.provider, it) }
             }
-            return weightedAverage(vals, weights)
+            val aggregation = ConsensusAggregation.analyzeValues(vals, weights, accuracyMultipliers)
+            return ConsensusAggregation.weightedAverage(aggregation.filtered, aggregation.weights)
         }
 
         fun firstNonNull(selector: (WeatherDetails) -> String?): String? =
@@ -221,23 +308,38 @@ class ConsensusEngine {
         date: Long,
         values: List<ProviderValue<NormalizedDailyForecast>>,
         weights: ProviderWeights,
+        accuracyMultipliers: Map<WeatherProvider, Float>,
     ): ConsensusDailyForecast {
-        val minTemps = removeOutliers(values.mapNotNull { pv ->
-            pv.value.minTempC?.let { ProviderValue(pv.provider, it) }
-        })
-        val maxTemps = removeOutliers(values.mapNotNull { pv ->
-            pv.value.maxTempC?.let { ProviderValue(pv.provider, it) }
-        })
-        val precipProb = removeOutliers(values.mapNotNull { pv ->
-            pv.value.precipitationProbabilityPercent?.let { ProviderValue(pv.provider, it) }
-        })
+        val minTemps = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.minTempC?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val maxTemps = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.maxTempC?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val precipProb = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv ->
+                pv.value.precipitationProbabilityPercent?.let { ProviderValue(pv.provider, it) }
+            },
+            weights,
+            accuracyMultipliers,
+        )
+
+        val minValues = minTemps.filtered.map { ProviderValue(it.provider, it.value) }
+        val maxValues = maxTemps.filtered.map { ProviderValue(it.provider, it.value) }
 
         return ConsensusDailyForecast(
             dateEpochSeconds = date,
-            minTempC = weightedAverage(minTemps, weights),
-            maxTempC = weightedAverage(maxTemps, weights),
-            condition = WeatherConditionMapper.consensusCondition(values.map { it.value.condition }),
-            precipitationProbabilityPercent = weightedAverage(precipProb, weights),
+            minTempC = ConsensusAggregation.conservativeMin(minValues),
+            maxTempC = ConsensusAggregation.conservativeMax(maxValues),
+            condition = WeatherConditionMapper.weightedConsensusCondition(
+                values.map { ProviderValue(it.provider, it.value.condition) },
+                weights,
+            ),
+            precipitationProbabilityPercent = ConsensusAggregation.aggregateRainProbability(precipProb),
             sunriseEpochSeconds = values.firstNotNullOfOrNull { it.value.sunriseEpochSeconds },
             sunsetEpochSeconds = values.firstNotNullOfOrNull { it.value.sunsetEpochSeconds },
         )
@@ -247,91 +349,67 @@ class ConsensusEngine {
         timestamp: Long,
         values: List<ProviderValue<NormalizedHourlyForecast>>,
         weights: ProviderWeights,
+        accuracyMultipliers: Map<WeatherProvider, Float>,
     ): ConsensusHourlyForecast {
-        val filteredTemp = removeOutliers(values.mapNotNull { pv ->
-            pv.value.temperatureC?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredWind = removeOutliers(values.mapNotNull { pv ->
-            pv.value.windKmh?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredPrecip = removeOutliers(values.mapNotNull { pv ->
-            pv.value.precipitationMm?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredPrecipProb = removeOutliers(values.mapNotNull { pv ->
-            pv.value.precipitationProbabilityPercent?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredHumidity = removeOutliers(values.mapNotNull { pv ->
-            pv.value.humidityPercent?.let { ProviderValue(pv.provider, it) }
-        })
-        val filteredFeelsLike = removeOutliers(values.mapNotNull { pv ->
-            pv.value.feelsLikeC?.let { ProviderValue(pv.provider, it) }
-        })
+        val tempAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.temperatureC?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val windAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.windKmh?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val precipAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.precipitationMm?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val precipProbAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv ->
+                pv.value.precipitationProbabilityPercent?.let { ProviderValue(pv.provider, it) }
+            },
+            weights,
+            accuracyMultipliers,
+        )
+        val humidityAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.humidityPercent?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
+        val feelsLikeAgg = ConsensusAggregation.analyzeValues(
+            values.mapNotNull { pv -> pv.value.feelsLikeC?.let { ProviderValue(pv.provider, it) } },
+            weights,
+            accuracyMultipliers,
+        )
 
         val scores = listOf(
-            agreementScore(filteredTemp),
-            agreementScore(filteredWind),
-            agreementScore(filteredPrecip),
-            agreementScore(filteredHumidity),
+            ConsensusAggregation.agreementScore(tempAgg.filtered.map { ProviderValue(it.provider, it.value) }),
+            ConsensusAggregation.agreementScore(windAgg.filtered.map { ProviderValue(it.provider, it.value) }),
+            ConsensusAggregation.agreementScore(precipAgg.filtered.map { ProviderValue(it.provider, it.value) }),
+            ConsensusAggregation.agreementScore(humidityAgg.filtered.map { ProviderValue(it.provider, it.value) }),
         ).filter { it >= 0 }
-        val conditionAgreement = conditionAgreement(values.map { it.value.condition })
-        val confidenceScore = if (scores.isEmpty()) conditionAgreement
-        else (scores.average() * 0.8) + (conditionAgreement * 0.2)
+
+        val conditionValues = values.map { ProviderValue(it.provider, it.value.condition) }
+        val conditionAgreement = ConsensusAggregation.conditionAgreement(conditionValues.map { it.value })
+        val confidenceScore = if (scores.isEmpty()) {
+            conditionAgreement
+        } else {
+            (scores.average() * 0.8) + (conditionAgreement * 0.2)
+        }
 
         return ConsensusHourlyForecast(
             timestampEpochSeconds = timestamp,
-            temperatureC = weightedAverage(filteredTemp, weights),
-            feelsLikeC = weightedAverage(filteredFeelsLike, weights),
-            windKmh = weightedAverage(filteredWind, weights),
-            precipitationMm = weightedAverage(filteredPrecip, weights),
-            precipitationProbabilityPercent = weightedAverage(filteredPrecipProb, weights),
-            humidityPercent = weightedAverage(filteredHumidity, weights),
-            condition = WeatherConditionMapper.consensusCondition(values.map { it.value.condition }),
+            temperatureC = ConsensusAggregation.weightedAverage(tempAgg.filtered, tempAgg.weights),
+            feelsLikeC = ConsensusAggregation.weightedAverage(feelsLikeAgg.filtered, feelsLikeAgg.weights),
+            windKmh = ConsensusAggregation.weightedAverage(windAgg.filtered, windAgg.weights),
+            precipitationMm = ConsensusAggregation.aggregatePrecipitationMm(precipAgg, confidenceScore),
+            precipitationProbabilityPercent = ConsensusAggregation.aggregateRainProbability(precipProbAgg),
+            humidityPercent = ConsensusAggregation.weightedAverage(humidityAgg.filtered, humidityAgg.weights),
+            condition = WeatherConditionMapper.weightedConsensusCondition(conditionValues, tempAgg.weights),
             confidence = ConfidenceLevel.fromScore(confidenceScore),
             providerContributions = values.associate { it.provider to it.value },
         )
-    }
-
-    private fun <T : Number> removeOutliers(values: List<ProviderValue<T>>): List<ProviderValue<T>> {
-        if (values.size <= 2) return values
-        val doubles = values.map { it.value.toDouble() }
-        val median = doubles.sorted().let { sorted ->
-            val mid = sorted.size / 2
-            if (sorted.size % 2 == 0) (sorted[mid - 1] + sorted[mid]) / 2.0 else sorted[mid]
-        }
-        val deviations = doubles.map { abs(it - median) }.sorted()
-        val mad = deviations[deviations.size / 2].coerceAtLeast(0.5)
-        return values.filter { abs(it.value.toDouble() - median) <= 2.5 * mad }
-    }
-
-    private fun <T : Number> weightedAverage(
-        values: List<ProviderValue<T>>,
-        weights: ProviderWeights,
-    ): Double? {
-        if (values.isEmpty()) return null
-        var weightedSum = 0.0
-        var totalWeight = 0.0
-        values.forEach { pv ->
-            val w = weights.weightFor(pv.provider).toDouble()
-            weightedSum += pv.value.toDouble() * w
-            totalWeight += w
-        }
-        return if (totalWeight > 0) weightedSum / totalWeight else null
-    }
-
-    private fun <T : Number> agreementScore(values: List<ProviderValue<T>>): Double {
-        if (values.size < 2) return if (values.size == 1) 1.0 else -1.0
-        val nums = values.map { it.value.toDouble() }
-        val mean = nums.average()
-        val maxDeviation = nums.maxOf { abs(it - mean) }
-        val range = (nums.maxOrNull() ?: 0.0) - (nums.minOrNull() ?: 0.0)
-        if (range <= 0.001) return 1.0
-        return (1.0 - (maxDeviation / range)).coerceIn(0.0, 1.0)
-    }
-
-    private fun conditionAgreement(conditions: List<WeatherCondition>): Double {
-        if (conditions.isEmpty()) return 0.0
-        if (conditions.size == 1) return 1.0
-        val grouped = conditions.groupingBy { it }.eachCount()
-        return grouped.maxOf { it.value }.toDouble() / conditions.size
     }
 }

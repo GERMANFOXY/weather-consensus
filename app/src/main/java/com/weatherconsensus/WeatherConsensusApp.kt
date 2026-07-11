@@ -7,6 +7,10 @@ import com.weatherconsensus.data.client.SupplementaryWeatherClient
 import com.weatherconsensus.data.client.WeatherProviderClient
 import com.weatherconsensus.data.location.LocationService
 import com.weatherconsensus.data.network.NetworkModule
+import com.weatherconsensus.data.preferences.ProviderAccuracyStore
+import com.weatherconsensus.data.network.NetworkMonitor
+import com.weatherconsensus.data.preferences.FavoriteLocationStore
+import com.weatherconsensus.data.preferences.LastLocationStore
 import com.weatherconsensus.data.preferences.ProviderWeightsStore
 import com.weatherconsensus.data.repository.WeatherRepository
 import com.weatherconsensus.data.update.AppUpdateRepository
@@ -21,6 +25,18 @@ class WeatherConsensusApp : Application() {
         private set
 
     lateinit var weightsStore: ProviderWeightsStore
+        private set
+
+    lateinit var lastLocationStore: LastLocationStore
+        private set
+
+    lateinit var favoriteLocationStore: FavoriteLocationStore
+        private set
+
+    lateinit var networkMonitor: NetworkMonitor
+        private set
+
+    lateinit var accuracyStore: ProviderAccuracyStore
         private set
 
     lateinit var appUpdateRepository: AppUpdateRepository
@@ -46,15 +62,21 @@ class WeatherConsensusApp : Application() {
             NetworkModule.openMeteoPollenApi,
         )
 
+        accuracyStore = ProviderAccuracyStore(this)
+
         repository = WeatherRepository(
             geocodingClient = geocodingClient,
             providerClient = providerClient,
             supplementaryClient = supplementaryClient,
             consensusEngine = ConsensusEngine(),
-            cache = WeatherCache(),
+            cache = WeatherCache(this),
+            accuracyStore = accuracyStore,
         )
         locationService = LocationService(this, geocodingClient)
         weightsStore = ProviderWeightsStore(this)
+        lastLocationStore = LastLocationStore(this)
+        favoriteLocationStore = FavoriteLocationStore(this)
+        networkMonitor = NetworkMonitor(this)
         appUpdateRepository = AppUpdateRepository(this, NetworkModule.okHttpClient)
     }
 }

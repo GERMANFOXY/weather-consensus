@@ -1,5 +1,7 @@
 package com.weatherconsensus.domain.normalization
 
+import com.weatherconsensus.domain.model.ProviderValue
+import com.weatherconsensus.domain.model.ProviderWeights
 import com.weatherconsensus.domain.model.WeatherCondition
 
 object WeatherConditionMapper {
@@ -81,5 +83,23 @@ object WeatherConditionMapper {
             .eachCount()
             .maxByOrNull { it.value }
             ?.key ?: conditions.first()
+    }
+
+    fun weightedConsensusCondition(
+        values: List<ProviderValue<WeatherCondition>>,
+        weights: ProviderWeights,
+    ): WeatherCondition {
+        if (values.isEmpty()) return WeatherCondition.UNKNOWN
+
+        val scores = mutableMapOf<WeatherCondition, Double>()
+        values.forEach { providerValue ->
+            if (providerValue.value == WeatherCondition.UNKNOWN) return@forEach
+            val weight = weights.weightFor(providerValue.provider).toDouble()
+            scores[providerValue.value] = scores.getOrDefault(providerValue.value, 0.0) + weight
+        }
+
+        return scores.maxByOrNull { it.value }?.key
+            ?: values.firstOrNull { it.value != WeatherCondition.UNKNOWN }?.value
+            ?: WeatherCondition.UNKNOWN
     }
 }

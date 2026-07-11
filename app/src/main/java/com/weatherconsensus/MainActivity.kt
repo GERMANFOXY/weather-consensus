@@ -70,6 +70,12 @@ private fun WeatherConsensusAppShell() {
         appUpdateViewModel.checkSilentlyOnStart()
     }
 
+    LaunchedEffect(selectedTab) {
+        if (selectedTab != MainTab.SETTINGS) {
+            appUpdateViewModel.clearMessage()
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         PremiumDashboardBackground()
 

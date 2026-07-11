@@ -41,8 +41,11 @@ fun HeroWeatherCard(
     condition: WeatherCondition,
     maxTempC: Double? = null,
     minTempC: Double? = null,
+    rainChancePercent: Double? = null,
     modifier: Modifier = Modifier,
 ) {
+    val displayRainChance = rainChancePercent ?: current.precipitationProbabilityPercent
+
     PremiumGlassSurface(modifier = modifier.fillMaxWidth(), cornerRadius = 24.dp, elevated = true) {
         Column(modifier = Modifier.padding(24.dp)) {
             Text(
@@ -99,7 +102,7 @@ fun HeroWeatherCard(
             ) {
                 HeroMetric(
                     icon = Icons.Outlined.WaterDrop,
-                    value = formatPercent(current.precipitationProbabilityPercent),
+                    value = formatPercent(displayRainChance),
                     label = UserCopy.RAIN_CHANCE,
                 )
                 HeroMetric(

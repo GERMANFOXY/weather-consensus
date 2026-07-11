@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Wetter</string>
+    <string name="widget_name">Wetter</string>
+    <string name="widget_description">Aktuelles Wetter für deinen gespeicherten Ort.</string>
 </resources>

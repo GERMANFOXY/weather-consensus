@@ -21,6 +21,7 @@ import com.weatherconsensus.domain.model.WeatherProvider
 import com.weatherconsensus.domain.model.WarningSeverity
 import com.weatherconsensus.domain.model.WeatherWarning
 import com.weatherconsensus.ui.copy.UserCopy
+import kotlin.math.roundToInt
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -152,6 +153,8 @@ object WeatherApiNormalizer {
             .take(24)
             .map(::mapHour)
 
+        val currentRainChance = hourly.firstOrNull()?.precipitationProbabilityPercent
+
         val daily = response.forecast.forecastday.take(7).map { day ->
             NormalizedDailyForecast(
                 dateEpochSeconds = WeatherDetailHelpers.parseOpenMeteoTime(day.date, zoneId),
@@ -176,7 +179,7 @@ object WeatherApiNormalizer {
                 feelsLikeC = current.feelslike_c,
                 windKmh = current.wind_kph,
                 precipitationMm = current.precip_mm,
-                precipitationProbabilityPercent = null,
+                precipitationProbabilityPercent = currentRainChance,
                 humidityPercent = current.humidity.toDouble(),
                 condition = WeatherConditionMapper.fromWeatherApiCode(current.condition.code),
                 details = details,
@@ -278,6 +281,8 @@ object OpenMeteoNormalizer {
             sunsetEpochSeconds = todaySunset,
         )
 
+        val hourlyForecast = buildHourly(response, zoneId)
+
         return ProviderWeatherResult(
             provider = WeatherProvider.OPEN_METEO,
             location = location,
@@ -286,12 +291,12 @@ object OpenMeteoNormalizer {
                 feelsLikeC = current.apparent_temperature,
                 windKmh = current.wind_speed_10m,
                 precipitationMm = current.precipitation,
-                precipitationProbabilityPercent = null,
+                precipitationProbabilityPercent = hourlyForecast.firstOrNull()?.precipitationProbabilityPercent,
                 humidityPercent = current.relative_humidity_2m.toDouble(),
                 condition = WeatherConditionMapper.fromOpenMeteoCode(current.weather_code),
                 details = details,
             ),
-            hourlyForecast = buildHourly(response, zoneId),
+            hourlyForecast = hourlyForecast,
             dailyForecast = buildDaily(response, zoneId),
             timezoneId = response.timezone,
         )
@@ -405,7 +410,12 @@ object DwdNormalizer {
             .take(7)
             .map { (date, dayRecords) ->
                 val temps = dayRecords.mapNotNull { it.temperature }
-                val precipProb = dayRecords.mapNotNull { it.precipitation_probability }.maxOrNull()
+                val precipProbs = dayRecords.mapNotNull { it.precipitation_probability }
+                val precipProb = if (precipProbs.isNotEmpty()) {
+                    precipProbs.average().roundToInt()
+                } else {
+                    null
+                }
                 NormalizedDailyForecast(
                     dateEpochSeconds = date.atStartOfDay(zoneId).toEpochSecond(),
                     minTempC = temps.minOrNull(),

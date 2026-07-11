@@ -27,8 +27,8 @@ android {
         applicationId = "com.weatherconsensus"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
 
         buildConfigField("String", "OPENWEATHERMAP_API_KEY", "\"${secret("OPENWEATHERMAP_API_KEY")}\"")
         buildConfigField("String", "WEATHERAPI_API_KEY", "\"${secret("WEATHERAPI_API_KEY")}\"")
@@ -100,6 +100,9 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    implementation("androidx.glance:glance-appwidget:1.1.1")
+    implementation("androidx.glance:glance-material3:1.1.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

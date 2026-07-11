@@ -12,18 +12,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +34,10 @@ import com.weatherconsensus.ui.copy.UserCopy
 import com.weatherconsensus.ui.theme.PremiumColors
 import com.weatherconsensus.ui.viewmodel.AppUpdateViewModel
 import com.weatherconsensus.ui.viewmodel.SettingsViewModel
+import kotlinx.coroutines.delay
+
+private const val UPDATE_SECTION_INDEX = 1
+private const val UPDATE_MESSAGE_VISIBLE_MS = 5_000L
 
 @Composable
 fun SettingsScreen(
@@ -48,110 +48,99 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val appUpdateState by appUpdateViewModel.uiState.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
+    val updateStatusMessage = appUpdateState.message
+    val saveMessage = uiState.saveMessage
 
-    LaunchedEffect(uiState.saveMessage) {
-        uiState.saveMessage?.let { message ->
-            snackbarHostState.showSnackbar(message)
-            viewModel.clearMessage()
-        }
+    LaunchedEffect(updateStatusMessage) {
+        if (updateStatusMessage.isNullOrBlank()) return@LaunchedEffect
+        listState.animateScrollToItem(UPDATE_SECTION_INDEX)
+        delay(UPDATE_MESSAGE_VISIBLE_MS)
+        appUpdateViewModel.clearMessage()
     }
 
-    LaunchedEffect(appUpdateState.message) {
-        appUpdateState.message?.let { message ->
-            snackbarHostState.showSnackbar(message)
-            appUpdateViewModel.clearMessage()
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(contentPadding),
+        state = listState,
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            Text(
+                text = UserCopy.SETTINGS_TITLE,
+                color = PremiumColors.TextPrimary,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .padding(top = 8.dp, bottom = 4.dp),
+            )
         }
-    }
 
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = androidx.compose.ui.graphics.Color.Transparent,
-        snackbarHost = {
-            SnackbarHost(snackbarHostState) { data ->
-                Snackbar(
-                    snackbarData = data,
-                    containerColor = PremiumColors.GlassFillElevated,
-                    contentColor = PremiumColors.TextPrimary,
-                )
-            }
-        },
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(contentPadding),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item {
+        item {
+            UpdateSectionCard(
+                installedVersionName = appUpdateState.installedVersionName,
+                checking = appUpdateState.checking,
+                statusMessage = updateStatusMessage,
+                onCheckForUpdate = { appUpdateViewModel.checkForUpdate(showNoUpdateMessage = true) },
+            )
+        }
+
+        item {
+            Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
                 Text(
-                    text = UserCopy.SETTINGS_TITLE,
+                    text = UserCopy.SERVICES_SETTINGS_TITLE,
                     color = PremiumColors.TextPrimary,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .statusBarsPadding()
-                        .padding(top = 8.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = UserCopy.SERVICES_SETTINGS_HINT,
+                    color = PremiumColors.TextMuted,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp),
                 )
             }
+        }
 
-            item {
-                Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
-                    Text(
-                        text = UserCopy.SERVICES_SETTINGS_TITLE,
-                        color = PremiumColors.TextPrimary,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    Text(
-                        text = UserCopy.SERVICES_SETTINGS_HINT,
-                        color = PremiumColors.TextMuted,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                }
-            }
+        items(WeatherProvider.all) { provider ->
+            ServiceTrustCard(
+                providerName = provider.userDisplayName,
+                selectedLevel = uiState.weights.trustLevelFor(provider),
+                onLevelSelected = { viewModel.updateTrustLevel(provider, it) },
+            )
+        }
 
-            items(WeatherProvider.all) { provider ->
-                ServiceTrustCard(
-                    providerName = provider.userDisplayName,
-                    selectedLevel = uiState.weights.trustLevelFor(provider),
-                    onLevelSelected = { viewModel.updateTrustLevel(provider, it) },
-                )
-            }
-
-            item {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PremiumButton(
                     text = UserCopy.SAVE,
                     onClick = viewModel::saveWeights,
                     modifier = Modifier.fillMaxWidth(),
                 )
-            }
-
-            item {
                 PremiumButton(
                     text = UserCopy.RESET,
                     onClick = viewModel::resetWeights,
                     modifier = Modifier.fillMaxWidth(),
                     secondary = true,
                 )
+                if (!saveMessage.isNullOrBlank()) {
+                    Text(
+                        text = saveMessage,
+                        color = PremiumColors.AccentCyan,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
             }
+        }
 
-            item {
-                UpdateSectionCard(
-                    installedVersionName = appUpdateState.installedVersionName,
-                    checking = appUpdateState.checking,
-                    onCheckForUpdate = { appUpdateViewModel.checkForUpdate(showNoUpdateMessage = true) },
-                )
-            }
-
-            item {
-                androidx.compose.foundation.layout.Spacer(
-                    modifier = Modifier.padding(bottom = 16.dp),
-                )
-            }
+        item {
+            androidx.compose.foundation.layout.Spacer(
+                modifier = Modifier.padding(bottom = 24.dp),
+            )
         }
     }
 }
@@ -160,6 +149,7 @@ fun SettingsScreen(
 private fun UpdateSectionCard(
     installedVersionName: String,
     checking: Boolean,
+    statusMessage: String?,
     onCheckForUpdate: () -> Unit,
 ) {
     PremiumGlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 24.dp) {
@@ -188,6 +178,20 @@ private fun UpdateSectionCard(
                 onClick = { if (!checking) onCheckForUpdate() },
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (!statusMessage.isNullOrBlank()) {
+                PremiumGlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = 14.dp,
+                ) {
+                    Text(
+                        text = statusMessage,
+                        color = PremiumColors.AccentCyan,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    )
+                }
+            }
         }
     }
 }

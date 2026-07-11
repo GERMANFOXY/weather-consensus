@@ -21,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.weatherconsensus.domain.consensus.ProviderRainResolver
 import com.weatherconsensus.domain.model.ProviderWeatherResult
 import com.weatherconsensus.domain.model.WeatherProvider
 import com.weatherconsensus.ui.components.PremiumGlassSurface
@@ -34,6 +35,7 @@ import kotlin.math.roundToInt
 fun WeatherProviderComparisonCard(
     providerResults: List<ProviderWeatherResult>,
     consensusTemp: Double?,
+    timezoneId: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val successful = providerResults.filter { it.isSuccess }
@@ -53,6 +55,7 @@ fun WeatherProviderComparisonCard(
                 ProviderComparisonRow(
                     result = result,
                     consensusTemp = consensusTemp,
+                    timezoneId = timezoneId,
                 )
             }
         }
@@ -63,11 +66,12 @@ fun WeatherProviderComparisonCard(
 private fun ProviderComparisonRow(
     result: ProviderWeatherResult,
     consensusTemp: Double?,
+    timezoneId: String?,
 ) {
     val provider = result.provider
     val current = result.current
     val temp = current?.temperatureC
-    val precip = current?.precipitationProbabilityPercent ?: 0.0
+    val precip = ProviderRainResolver.displayRainChance(result, timezoneId) ?: 0.0
     val deviation = if (temp != null && consensusTemp != null) {
         abs(temp - consensusTemp)
     } else 0.0

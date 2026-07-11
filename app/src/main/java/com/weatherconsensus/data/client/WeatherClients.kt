@@ -230,7 +230,17 @@ class WeatherProviderClient(
 
         val hourly = OpenWeatherNormalizer.normalizeForecast(location, forecast.list)
 
-        return result.copy(hourlyForecast = hourly)
+        val enrichedCurrent = result.current?.let { snapshot ->
+            if (snapshot.precipitationProbabilityPercent == null) {
+                snapshot.copy(
+                    precipitationProbabilityPercent = hourly.firstOrNull()?.precipitationProbabilityPercent,
+                )
+            } else {
+                snapshot
+            }
+        }
+
+        return result.copy(current = enrichedCurrent, hourlyForecast = hourly)
 
     }
 

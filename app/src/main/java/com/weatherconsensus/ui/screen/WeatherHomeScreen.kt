@@ -22,6 +22,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -46,7 +48,10 @@ import com.weatherconsensus.ui.components.WeatherEmptyState
 import com.weatherconsensus.ui.components.WeatherErrorState
 import com.weatherconsensus.ui.components.WeatherLoadingState
 import com.weatherconsensus.ui.components.dashboard.DashboardTopBar
+import com.weatherconsensus.ui.components.dashboard.FavoriteLocationsRow
+import com.weatherconsensus.ui.components.dashboard.OfflineWeatherBanner
 import com.weatherconsensus.ui.components.dashboard.DailyForecastCard
+import com.weatherconsensus.ui.components.dashboard.EnsembleHintCard
 import com.weatherconsensus.ui.components.dashboard.HeroWeatherCard
 import com.weatherconsensus.ui.components.dashboard.HourlyForecastCard
 import com.weatherconsensus.ui.components.dashboard.SafetyScoreCard
@@ -99,6 +104,33 @@ fun WeatherHomeScreen(
                     if (result != null) {
                         DropdownMenuItem(
                             text = {
+                                Text(
+                                    if (viewModel.isCurrentLocationFavorite()) {
+                                        UserCopy.REMOVE_FAVORITE
+                                    } else {
+                                        UserCopy.ADD_FAVORITE
+                                    },
+                                    color = PremiumColors.TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                showMenu = false
+                                viewModel.toggleFavorite()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (viewModel.isCurrentLocationFavorite()) {
+                                        Icons.Outlined.Star
+                                    } else {
+                                        Icons.Outlined.StarOutline
+                                    },
+                                    null,
+                                    tint = PremiumColors.AccentWarm,
+                                )
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = {
                                 Text(UserCopy.REFRESH_WEATHER, color = PremiumColors.TextPrimary)
                             },
                             onClick = {
@@ -148,6 +180,22 @@ fun WeatherHomeScreen(
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
+                if (uiState.favorites.isNotEmpty()) {
+                    item {
+                        FavoriteLocationsRow(
+                            favorites = uiState.favorites,
+                            selectedLocation = result?.location,
+                            onFavoriteSelected = { viewModel.selectFavorite(it) },
+                        )
+                    }
+                }
+
+                if (uiState.isOfflineMode && uiState.offlineMessage != null) {
+                    item {
+                        OfflineWeatherBanner(message = uiState.offlineMessage!!)
+                    }
+                }
+
                 if (showSearch || result == null) {
                     item {
                         CompactSearchBar(
@@ -235,16 +283,22 @@ private fun DashboardWeatherContent(result: WeatherConsensusResult) {
         exit = fadeOut(tween(300)),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            val todayForecast = ForecastDateUtils.todayForecast(result.dailyForecast, result.timezoneId)
             HeroWeatherCard(
                 current = result.current,
                 condition = result.current.condition,
-                maxTempC = ForecastDateUtils.todayForecast(result.dailyForecast, result.timezoneId)?.maxTempC,
-                minTempC = ForecastDateUtils.todayForecast(result.dailyForecast, result.timezoneId)?.minTempC,
+                maxTempC = todayForecast?.maxTempC,
+                minTempC = todayForecast?.minTempC,
+                rainChancePercent = todayForecast?.precipitationProbabilityPercent
+                    ?: result.hourlyForecast.firstOrNull()?.precipitationProbabilityPercent
+                    ?: result.current.precipitationProbabilityPercent,
             )
             SafetyScoreCard(current = result.current)
+            EnsembleHintCard(current = result.current)
             WeatherProviderComparisonCard(
                 providerResults = result.providerResults,
                 consensusTemp = result.current.temperatureC,
+                timezoneId = result.timezoneId,
             )
             if (result.hourlyForecast.isNotEmpty()) {
                 HourlyForecastCard(

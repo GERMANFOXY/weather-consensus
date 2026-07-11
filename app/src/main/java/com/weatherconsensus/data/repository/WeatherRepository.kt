@@ -4,6 +4,7 @@ import com.weatherconsensus.data.cache.WeatherCache
 import com.weatherconsensus.data.client.GeocodingClient
 import com.weatherconsensus.data.client.SupplementaryWeatherClient
 import com.weatherconsensus.data.client.WeatherProviderClient
+import com.weatherconsensus.data.preferences.ProviderAccuracyStore
 import com.weatherconsensus.data.config.ApiKeyConfig
 import com.weatherconsensus.domain.consensus.ConsensusEngine
 import com.weatherconsensus.domain.consensus.ProviderWeightPolicy
@@ -22,6 +23,7 @@ class WeatherRepository(
     private val supplementaryClient: SupplementaryWeatherClient,
     private val consensusEngine: ConsensusEngine,
     private val cache: WeatherCache,
+    private val accuracyStore: ProviderAccuracyStore,
 ) {
     suspend fun searchCities(query: String): List<GeoLocation> =
         geocodingClient.searchCities(query)
@@ -32,7 +34,7 @@ class WeatherRepository(
         forceRefresh: Boolean = false,
     ): WeatherConsensusResult {
         if (!forceRefresh) {
-            cache.get(location)?.let { return it }
+            cache.getFresh(location)?.let { return it }
         }
 
         val missingKeys = ApiKeyConfig.missingKeyProviders()
@@ -63,6 +65,7 @@ class WeatherRepository(
 
         val timezoneId = providerResults.firstNotNullOfOrNull { it.timezoneId }
         val effectiveWeights = ProviderWeightPolicy.effectiveWeights(location, weights)
+        val accuracyMultipliers = accuracyStore.currentMultipliers()
         val dwdResult = providerResults.find { it.provider == WeatherProvider.DWD }
         val warnings = dwdResult?.weatherWarnings.orEmpty()
         val warningsLoadError = if (location.isInGermany() && dwdResult?.warningsLoadFailed == true) {
@@ -81,11 +84,20 @@ class WeatherRepository(
             weatherWarnings = warnings,
             warningsLoadError = warningsLoadError,
             isInGermany = location.isInGermany(),
+            accuracyMultipliers = accuracyMultipliers,
+        )
+
+        accuracyStore.applyConsensusFeedback(
+            statisticalOutliers = result.current.statisticalOutliers.keys,
+            agreeingProviders = result.current.providerContributions.keys,
         )
 
         cache.put(location, result)
         return result
     }
+
+    fun getStaleWeather(location: GeoLocation): WeatherConsensusResult? =
+        cache.getStale(location)
 
     fun clearCache() = cache.clear()
 }

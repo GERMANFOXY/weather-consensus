@@ -191,6 +191,19 @@ data class ProviderValue<T>(
 )
 
 @Serializable
+data class EnsembleAgreement(
+    val agreeingProviders: Int,
+    val totalProviders: Int,
+    val type: String,
+    val label: String? = null,
+) {
+    companion object {
+        const val TYPE_CONDITION = "condition"
+        const val TYPE_RAIN = "rain"
+    }
+}
+
+@Serializable
 data class ConsensusSnapshot(
     val temperatureC: Double?,
     val feelsLikeC: Double? = null,
@@ -203,7 +216,9 @@ data class ConsensusSnapshot(
     val confidenceScore: Double,
     val details: WeatherDetails = WeatherDetails(),
     val providerContributions: Map<WeatherProvider, NormalizedWeatherSnapshot>,
-    val excludedProviders: Map<WeatherProvider, String>,
+    val excludedProviders: Map<WeatherProvider, String> = emptyMap(),
+    val statisticalOutliers: Map<WeatherProvider, String> = emptyMap(),
+    val ensembleHints: List<EnsembleAgreement> = emptyList(),
 )
 
 @Serializable

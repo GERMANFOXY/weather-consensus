@@ -63,6 +63,28 @@ object UserCopy {
     const val USE_LOCATION = "Standort nutzen"
     const val REFRESH = "Aktualisieren"
 
+    const val WIDGET_EMPTY = "Wetter öffnen"
+    const val FAVORITE_ADDED = "Zu Favoriten hinzugefügt."
+    const val FAVORITE_REMOVED = "Aus Favoriten entfernt."
+    const val ADD_FAVORITE = "Zu Favoriten hinzufügen"
+    const val REMOVE_FAVORITE = "Aus Favoriten entfernen"
+    const val OFFLINE_NO_DATA = "Kein Internet und keine gespeicherten Wetterdaten vorhanden."
+
+    fun offlineDataMessage(fetchedAtEpochMs: Long, timezoneId: String?, weakNetwork: Boolean): String {
+        val stand = formatDataTimestamp(fetchedAtEpochMs, timezoneId)
+        return if (weakNetwork) {
+            "Schwache Verbindung. Angezeigter Stand vom $stand."
+        } else {
+            "Kein Internet. Angezeigter Stand vom $stand."
+        }
+    }
+
+    fun formatDataTimestamp(epochMs: Long, zoneId: String?): String {
+        val zone = zoneId?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: ZoneId.systemDefault()
+        return DateTimeFormatter.ofPattern("d. MMM · HH:mm", Locale.GERMAN)
+            .format(Instant.ofEpochMilli(epochMs).atZone(zone))
+    }
+
     const val FEELS_LIKE = "Gefühlt"
     const val RAIN = "Regen"
     const val HUMIDITY = "Luftfeuchtigkeit"
@@ -76,6 +98,7 @@ object UserCopy {
     const val DAILY = "7-Tage-Vorhersage"
     const val COMPARISON_TITLE = "Wetterdienste im Vergleich"
     const val COMPARISON_SUBTITLE = "So ähnlich sehen die Vorhersagen aktuell aus."
+    const val ENSEMBLE_TITLE = "Quellenübereinstimmung"
     const val RAIN_CHANCE = RAIN_CHANCE_LABEL
     const val SUN_MOON = "Sonne & Mond"
     const val SUNRISE = "Sonnenaufgang"
@@ -141,6 +164,12 @@ object UserCopy {
         }
         return base + outlier
     }
+
+    fun ensembleCondition(agreeing: Int, total: Int, label: String): String =
+        "$agreeing von $total Quellen: $label"
+
+    fun ensembleRain(agreeing: Int, total: Int): String =
+        "$agreeing von $total Quellen sehen Regen"
 
     fun formatTodayDate(epochMs: Long, zoneId: String?): String {
         val zone = zoneId?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: ZoneId.systemDefault()
