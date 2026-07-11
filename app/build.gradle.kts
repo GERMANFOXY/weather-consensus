@@ -43,8 +43,27 @@ android {
         )
     }
 
+    signingConfigs {
+        create("release") {
+            val keystorePath = secret("RELEASE_KEYSTORE_PATH")
+            if (keystorePath.isNotBlank()) {
+                storeFile = rootProject.file(keystorePath)
+                storePassword = secret("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = secret("RELEASE_KEY_ALIAS")
+                keyPassword = secret("RELEASE_KEY_PASSWORD")
+            } else {
+                // Test-/Sideload-Releases: gleicher Key wie assembleDebug, damit Updates funktionieren.
+                storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
